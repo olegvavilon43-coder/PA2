@@ -8,8 +8,5 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "yandex-dialogs-sdk": "^2.3.0"
-  }
+  "description": ""
 }
