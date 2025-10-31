@@ -3,5 +3,9 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "vercel dev"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "yandex-dialogs-sdk": "^2.3.0"
   }
 }
