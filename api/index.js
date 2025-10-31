@@ -1,6 +1,11 @@
 // api/index.js
-let alarmTime = null; // Хранит время будильника: "07:30"
-let alarmSessionId = null; // Кому поставлен будильник
+let alarmConfig = {
+  time: null,           // "07:30"
+  reminderTime: null,   // "07:33" — через 3 минуты
+  days: [],             // [1,2,3,4,5] — пн-пт
+  sessionId: null,
+  triggered: false      // чтобы не повторять
+};
 
 module.exports = (req, res) => {
   console.log('Запрос получен:', new Date().toISOString());
@@ -17,77 +22,122 @@ module.exports = (req, res) => {
       const sessionId = data.session?.session_id;
       const userMessage = (data.request?.command || data.request?.original_utterance || '').toLowerCase().trim();
 
-      // Текущая дата и время
       const now = new Date();
       const currentTime = now.toTimeString().slice(0, 5); // "07:30"
-      const currentHourMinute = currentTime;
+      const currentDay = now.getDay(); // 0=вс, 1=пн...
 
       let responseText = '';
       let endSession = false;
 
-      // === 1. Проверяем, сработал ли будильник ===
-      if (alarmTime && alarmSessionId === sessionId && currentHourMinute === alarmTime) {
-        responseText = 'Доброе утро! Пора просыпаться!';
-        // Сбрасываем будильник
-        alarmTime = null;
-        alarmSessionId = null;
-        endSession = false; // Можно продолжить диалог
+      // === 1. Первый будильник: "Доброе утро!" ===
+      if (
+        alarmConfig.time &&
+        alarmConfig.sessionId === sessionId &&
+        currentTime === alarmConfig.time &&
+        (alarmConfig.days.length === 0 || alarmConfig.days.includes(currentDay)) &&
+        !alarmConfig.triggered
+      ) {
+        responseText = 'Доброе утро! Пора вставать!';
+        alarmConfig.triggered = true; // чтобы не повторять
+        endSession = false;
       }
 
-      // === 2. Установка будильника: "разбуди в 7:30", "будильник на 8 утра" ===
+      // === 2. Напоминание через 3 минуты: "Вы встали?" ===
+      else if (
+        alarmConfig.reminderTime &&
+        alarmConfig.sessionId === sessionId &&
+        currentTime === alarmConfig.reminderTime &&
+        (alarmConfig.days.length === 0 || alarmConfig.days.includes(currentDay))
+      ) {
+        responseText = 'Вы встали?';
+        // Сбрасываем всё
+        alarmConfig = { time: null, reminderTime: null, days: [], sessionId: null, triggered: false };
+        endSession = false;
+      }
+
+      // === 3. Установка будильника ===
       else if (userMessage.includes('разбуди') || userMessage.includes('будильник')) {
         const timeMatch = userMessage.match(/(\d{1,2})[.:]?(\d{2})?/);
-        if (timeMatch) {
+        if (!timeMatch) {
+          responseText = 'На какое время? Например: "в 7:30"';
+        } else {
           let hours = parseInt(timeMatch[1], 10);
           let minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
 
-          // Приводим к 24ч формату
           if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-            responseText = 'Неправильное время. Скажи, например: "разбуди в 7:30"';
+            responseText = 'Неверное время.';
           } else {
             hours = hours.toString().padStart(2, '0');
             minutes = minutes.toString().padStart(2, '0');
-            alarmTime = `${hours}:${minutes}`;
-            alarmSessionId = sessionId;
+            const timeStr = `${hours}:${minutes}`;
 
-            responseText = `Будильник установлен на ${hours}:${minutes}. Я разбужу тебя!`;
+            // +3 минуты
+            let reminderDate = new Date();
+            reminderDate.setHours(parseInt(hours, 10));
+            reminderDate.setMinutes(parseInt(minutes, 10) + 3);
+            if (reminderDate.getDate() !== now.getDate()) {
+              reminderDate.setDate(reminderDate.getDate() - 1); // если перешло за полночь
+            }
+            const reminderTime = reminderDate.toTimeString().slice(0, 5);
+
+            // Дни недели
+            const days = [];
+            if (userMessage.includes('будни') || userMessage.includes('по будням')) days.push(1,2,3,4,5);
+            else if (userMessage.includes('выходные')) days.push(0,6);
+            else {
+              const dayMap = { 'понедельник':1, 'вторник':2, 'среду':3, 'четверг':4, 'пятницу':5, 'субботу':6, 'воскресенье':0 };
+              for (const [k, v] of Object.entries(dayMap)) {
+                if (userMessage.includes(k)) days.push(v);
+              }
+            }
+
+            alarmConfig = {
+              time: timeStr,
+              reminderTime,
+              days: [...new Set(days)],
+              sessionId,
+              triggered: false
+            };
+
+            const dayList = alarmConfig.days.length > 0
+              ? alarmConfig.days.map(d => ['вс','пн','вт','ср','чт','пт','сб'][d]).join(', ')
+              : 'каждый день';
+
+            responseText = `Будильник на ${timeStr}, напомню в ${reminderTime} — ${dayList}`;
           }
-        } else {
-          responseText = 'На какое время поставить будильник? Например: "в 7:30"';
         }
       }
 
-      // === 3. Команда "отмени будильник" ===
-      else if (userMessage.includes('отмени') || userMessage.includes('сбрось')) {
-        if (alarmTime && alarmSessionId === sessionId) {
-          alarmTime = null;
-          alarmSessionId = null;
+      // === 4. Отмена ===
+      else if (userMessage.includes('отмени')) {
+        if (alarmConfig.sessionId === sessionId) {
+          alarmConfig = { time: null, reminderTime: null, days: [], sessionId: null, triggered: false };
           responseText = 'Будильник отменён.';
-        } else {
-          responseText = 'Будильник не был установлен.';
-        }
-      }
-
-      // === 4. Команда "какое время будильника" ===
-      else if (userMessage.includes('время') || userMessage.includes('когда')) {
-        if (alarmTime && alarmSessionId === sessionId) {
-          responseText = `Будильник на ${alarmTime}.`;
         } else {
           responseText = 'Будильник не установлен.';
         }
       }
 
-      // === 5. Эхо-режим (если ничего не подошло) ===
+      // === 5. Статус ===
+      else if (userMessage.includes('статус') || userMessage.includes('когда')) {
+        if (alarmConfig.sessionId === sessionId && alarmConfig.time) {
+          const dayList = alarmConfig.days.length > 0
+            ? alarmConfig.days.map(d => ['вс','пн','вт','ср','чт','пт','сб'][d]).join(', ')
+            : 'каждый день';
+          responseText = `Будильник: ${alarmConfig.time}, напомню в ${alarmConfig.reminderTime} — ${dayList}`;
+        } else {
+          responseText = 'Будильник не установлен.';
+        }
+      }
+
+      // === 6. Эхо ===
       else {
-        responseText = `Ты сказал: "${data.request?.original_utterance}"\n\nСкажи: "разбуди в 7:30" — и я поставлю будильник!`;
+        responseText = `Ты сказал: "${data.request?.original_utterance}"\nСкажи: "разбуди в 7:30"`;
       }
 
       // === Ответ ===
       const response = {
-        response: {
-          text: responseText,
-          end_session: endSession
-        },
+        response: { text: responseText, end_session: endSession },
         session: data.session,
         version: '1.0'
       };
@@ -98,7 +148,7 @@ module.exports = (req, res) => {
     } catch (error) {
       console.error('Ошибка:', error);
       res.status(500).json({
-        response: { text: 'Произошла ошибка. Попробуй снова.' },
+        response: { text: 'Ошибка.' },
         version: '1.0'
       });
     }
