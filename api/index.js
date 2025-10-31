@@ -1,153 +1,166 @@
 // api/index.js
 const SESSION_KEY = 'wakeUp';
 
+// Vercel: используем globalThis
+if (!globalThis.wakeUpStates) globalThis.wakeUpStates = {};
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end();
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-  const { request, session, version, state } = req.body;
-  const userId = session.user_id;
-  const now = new Date();
+  const body = req.body || {};
 
-  // Хранилище состояний (в реальном продакшене — Redis, но для Vercel используем глобальный объект)
-  if (!global.wakeUpStates) global.wakeUpStates = {};
+  // --- ЗАЩИТА: проверяем все поля ---
+  if (!body.request || !body.version) {
+    return res.status(400).json({ error: 'Invalid request: missing request or version' });
+  }
 
-  const userState = global.wakeUpStates[userId] || {
+  const request = body.request;
+  const version = body.version;
+  const session = body.session || {};
+  const userId = session.user_id || session.application?.application_id || 'unknown_user';
+
+  const now = Date.now();
+  const userState = globalThis.wakeUpStates[userId] || {
     targetTime: null,
-    stage: 'idle', // idle, waiting, asked_once, asked_twice, playing_music
+    stage: 'idle',
     timeoutId: null
   };
 
-  let response = {
-    text: '',
-    end_session: false,
-    tts: '',
-    buttons: []
-  };
+  let response = { text: '', end_session: false, tts: '' };
 
-  // --- Парсинг команды "разбуди в 7:30" ---
-  if (request.command.toLowerCase().includes('разбуди') || request.command.toLowerCase().includes('будильник')) {
-    const timeMatch = request.command.match(/(\d{1,2})[.:]?(\d{2})?/);
-    if (!timeMatch) {
-      response.text = 'Скажи время, например: "разбуди в 7:30"';
-      return send(res, { response, version, session });
+  try {
+    const cmd = (request.command || '').toString().toLowerCase().trim();
+
+    // === КОМАНДА "разбуди в 7:30" ===
+    if (cmd.includes('разбуди') || cmd.includes('будильник')) {
+      const match = cmd.match(/(\d{1,2})[.:]?(\d{2})?/);
+      if (!match) {
+        response.text = 'Скажи время: "разбуди в 7:30"';
+        return send(res, response, version, session);
+      }
+
+      let [_, h, m = '00'] = match;
+      const hours = parseInt(h), minutes = parseInt(m);
+      if (hours > 23 || minutes > 59) {
+        response.text = 'Неверное время';
+        return send(res, response, version, session);
+      }
+
+      let target = new Date();
+      target.setHours(hours, minutes, 0, 0);
+      if (target <= now) target.setDate(target.getDate() + 1);
+
+      userState.targetTime = target.getTime();
+      userState.stage = 'waiting';
+      globalThis.wakeUpStates[userId] = userState;
+
+      const delay = target.getTime() - now;
+      userState.timeoutId = setTimeout(() => triggerWakeUp(userId), Math.min(delay, 2147483647)); // max 24.8 дней
+
+      response.text = `Разбужу в ${hours}:${m.padStart(2, '0')}. Спокойной ночи!`;
+      return send(res, response, version, session, { wakeUp: userState });
     }
 
-    let [_, hours, minutes = '00'] = timeMatch;
-    hours = parseInt(hours);
-    minutes = parseInt(minutes);
-
-    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-      response.text = 'Неверное время. Попробуй: "разбуди в 8:15"';
-      return send(res, { response, version, session });
+    // === ТЕСТ: "тест будильника" ===
+    if (cmd.includes('тест будильника')) {
+      userState.targetTime = now + 10000; // через 10 сек
+      userState.stage = 'waiting';
+      userState.timeoutId = setTimeout(() => triggerWakeUp(userId), 10000);
+      globalThis.wakeUpStates[userId] = userState;
+      response.text = 'Тест: разбужу через 10 секунд';
+      return send(res, response, version, session, { wakeUp: userState });
     }
 
-    const target = new Date();
-    target.setHours(hours, minutes, 0, 0);
-
-    // Если время уже прошло — на завтра
-    if (target <= now) {
-      target.setDate(target.getDate() + 1);
+    // === СТАДИИ ПРОБУЖДЕНИЯ ===
+    if (userState.stage === 'waiting' && userState.targetTime && now >= userState.targetTime) {
+      userState.stage = 'waking';
+      response.text = 'Вставай с добрым утром!';
+      response.tts = 'Вставай с добрым утром!';
+      userState.timeoutId = setTimeout(() => askAwake(userId, 1), 30000);
+      globalThis.wakeUpStates[userId] = userState;
+      return send(res, response, version, session, { wakeUp: userState });
     }
 
-    userState.targetTime = target.getTime();
-    userState.stage = 'waiting';
-    global.wakeUpStates[userId] = userState;
+    // === Ответ на "Проснулся?" ===
+    if (['asked_once', 'asked_twice'].includes(userState.stage)) {
+      if (cmd && !cmd.includes('нет')) {
+        response.text = 'Отлично! Хорошего дня!';
+        response.end_session = true;
+        clearTimeout(userState.timeoutId);
+        delete globalThis.wakeUpStates[userId];
+        return send(res, response, version, session);
+      }
+    }
 
-    // Установка таймаута
-    const delay = target - now;
-    userState.timeoutId = setTimeout(() => triggerWakeUp(userId), delay);
+    // === ВНУТРЕННИЕ ТРИГГЕРЫ ===
+    if (cmd === '__trigger__' && request.payload?.type) {
+      const type = request.payload.type;
 
-    response.text = `Хорошо, разбужу в ${hours}:${minutes.toString().padStart(2, '0')}. Спокойной ночи!`;
-    response.tts = response.text;
-    return send(res, { response, version, session, state: { session: { ...state.session, ...userState } } });
+      if (type === 'waking') {
+        response.text = 'Вставай с добрым утром!';
+        userState.stage = 'waking';
+        userState.timeoutId = setTimeout(() => askAwake(userId, 1), 30000);
+      } else if (type === 'ask1') {
+        response.text = 'Проснулся?';
+        userState.stage = 'asked_once';
+        userState.timeoutId = setTimeout(() => askAwake(userId, 2), 60000);
+      } else if (type === 'ask2') {
+        response.text = 'Проснулся?';
+        userState.stage = 'asked_twice';
+        userState.timeoutId = setTimeout(() => playMusic(userId), 60000);
+      } else if (type === 'music') {
+        response.text = 'Включаю бодрую музыку!';
+        response.directives = [{
+          name: 'start_music',
+          payload: { content: { type: 'playlist', id: 'popular_morning' }}
+        }];
+        response.end_session = true;
+        delete globalThis.wakeUpStates[userId];
+      }
+
+      globalThis.wakeUpStates[userId] = userState;
+      return send(res, response, version, session);
+    }
+
+    // === ПО УМОЛЧАНИЮ ===
+    response.text = 'Скажи: "разбуди меня в 7:30" или "тест будильника"';
+    return send(res, response, version, session);
+
+  } catch (err) {
+    console.error('Ошибка:', err);
+    response.text = 'Ошибка. Попробуй позже.';
+    return send(res, response, version, session);
   }
-
-  // --- СТАДИИ ПРОБУЖДЕНИЯ ---
-  if (userState.stage === 'waiting' && userState.targetTime && now.getTime() >= userState.targetTime) {
-    userState.stage = 'waking';
-    response.text = 'Вставай с добрым утром!';
-    response.tts = 'Вставай с добрым утром!';
-    userState.timeoutId = setTimeout(() => askIfAwake(userId, 1), 30000); // 30 сек
-    global.wakeUpStates[userId] = userState;
-    return send(res, { response, version, session, state: { session: userState } });
-  }
-
-  // --- Ответ на "Проснулся?" ---
-  if (userState.stage === 'asked_once' || userState.stage === 'asked_twice') {
-    if (request.command && !request.command.toLowerCase().includes('нет')) {
-      response.text = 'Отлично! Хорошего дня!';
-      response.end_session = true;
-      clearTimeout(userState.timeoutId);
-      delete global.wakeUpStates[userId];
-      return send(res, { response, version, session });
-    }
-  }
-
-  // --- Автоматические триггеры (вызываются через setTimeout) ---
-  if (request.command === '__TRIGGER__') {
-    const trigger = request.payload?.trigger;
-    if (trigger === 'ask1') {
-      response.text = 'Проснулся?';
-      userState.stage = 'asked_once';
-      userState.timeoutId = setTimeout(() => askIfAwake(userId, 2), 60000); // 1 минута
-    } else if (trigger === 'ask2') {
-      response.text = 'Проснулся?';
-      userState.stage = 'asked_twice';
-      userState.timeoutId = setTimeout(() => playMusic(userId), 60000);
-    } else if (trigger === 'music') {
-      response.text = 'Включаю бодрую музыку!';
-      response.directives = [{
-        name: 'start_music',
-        payload: {
-          content: {
-            type: 'playlist',
-            id: 'popular_morning' // можно заменить на реальный плейлист
-          }
-        }
-      }];
-      response.end_session = true;
-      delete global.wakeUpStates[userId];
-    }
-    global.wakeUpStates[userId] = userState;
-    return send(res, { response, version, session });
-  }
-
-  // --- По умолчанию ---
-  response.text = 'Скажи: "разбуди меня в 7:30"';
-  return send(res, { response, version, session });
 }
 
-// --- Вспомогательные функции ---
-function triggerWakeUp(userId) {
-  sendTrigger(userId, 'waking');
-}
+// === ТРИГГЕРЫ ===
+function triggerWakeUp(userId) { sendTrigger(userId, 'waking'); }
+function askAwake(userId, n) { sendTrigger(userId, `ask${n}`); }
+function playMusic(userId) { sendTrigger(userId, 'music'); }
 
-function askIfAwake(userId, attempt) {
-  sendTrigger(userId, attempt === 1 ? 'ask1' : 'ask2');
-}
+async function sendTrigger(userId, type) {
+  const url = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}/api/index`
+    : 'http://localhost:3000/api/index';
 
-function playMusic(userId) {
-  sendTrigger(userId, 'music');
-}
-
-async function sendTrigger(userId, trigger) {
-  const payload = { trigger };
-  await fetch('https://your-vercel-app.vercel.app/api/index', {
+  await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      request: { command: '__TRIGGER__', payload, version: '1.0' },
-      session: { user_id: userId, new: false },
+      request: { command: '__trigger__', payload: { type }, version: '1.0' },
+      session: { user_id: userId },
       version: '1.0'
     })
-  }).catch(() => {});
+  }).catch(err => console.error('Trigger error:', err));
 }
 
-function send(res, data) {
+function send(res, response, version, session, session_state = {}) {
   res.json({
-    response: data.response,
-    session_state: data.state?.session || {},
-    version: data.version,
-    session: data.session
+    response,
+    session_state,
+    version,
+    session
   });
 }
