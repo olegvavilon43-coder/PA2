@@ -1,16 +1,26 @@
+// index.js
 const { Alice, Reply } = require('yandex-dialogs-sdk');
-
-// Создаем экземпляр Алисы
 const alice = new Alice();
 
-// Обработчик для всех сообщений
-alice.any(async (ctx) => {
-    // Получаем текст пользователя
-    const userMessage = ctx.message;
-    
-    // Возвращаем тот же текст, что и прислал пользователь
-    return Reply.text(userMessage);
+alice.command('', (ctx) => {
+    const userMessage = ctx.message.trim();
+
+    // Если пользователь ничего не сказал — просим ввести текст
+    if (!userMessage) {
+        return Reply.text('Скажите что-нибудь, и я повторю!');
+    }
+
+    // Повторяем сообщение пользователя
+    return Reply.text(`Вы сказали: "${userMessage}"`);
 });
 
-// Запускаем сервер (для Яндекс.Диалогов)
-module.exports.handler = alice.handler;
+// Для локального тестирования (необязательно)
+if (require.main === module) {
+    const port = process.env.PORT || 3000;
+    const server = alice.createServer();
+    server.listen(port, () => {
+        console.log(`Сервер Алисы запущен на порту ${port}`);
+    });
+}
+
+module.exports = alice;
