@@ -1,32 +1,63 @@
-const { Alice, Reply } = require('@yandex-cloud/alice-sdk');
+const { Alice, Reply } = require('yandex-dialogs-sdk');
+const fetch = require('node-fetch'); // Для push-уведомлений
 
-// Создаем экземпляр навыка
+// Замените на ваши реальные значения из консоли Яндекс.Диалогов
+const SKILL_ID = 'your_skill_id_here'; // ID вашего навыка
+const OAUTH_TOKEN = 'your_oauth_token_here'; // OAuth-токен для API
+
+// Создаём экземпляр навыка
 const alice = new Alice();
 
-// Обработчик входящих запросов
-alice.on('request', async (req, res) => {
-  // Проверяем, что запрос — это запуск навыка
-  if (req.isLaunch) {
-    // Алиса говорит "Доброе утро"
-    res.appendText('Доброе утро!');
-
-    // Устанавливаем таймер на 3 минуты (180000 миллисекунд)
-    setTimeout(() => {
-      // Отправляем дополнительное сообщение "Вы проснулись?"
-      // Для этого нужно использовать механизм push-уведомлений или сессию
-      res.appendText('Вы проснулись?');
-    }, 180000);
-
-    // Возвращаем ответ, чтобы не закрывать сессию
-    return Reply.text('Доброе утро!', { endSession: false });
+// Функция для отправки push-уведомления
+async function sendPushNotification(userId, message) {
+  try {
+    const response = await fetch(`https://dialogs.yandex.net/api/v1/skills/${SKILL_ID}/push`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OAUTH_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        user_id: userId, // userId из req
+        message: {
+          text: message,
+          tts: message, // TTS для голосового воспроизведения
+          end_session: false, // Не закрывать сессию
+        },
+      }),
+    });
+    if (!response.ok) {
+      console.error('Ошибка push:', await response.text());
+    }
+  } catch (error) {
+    console.error('Ошибка отправки push:', error);
   }
+}
 
-  // Если это не запуск, возвращаем пустой ответ
-  return Reply.text('');
+// Обработчик запросов
+alice.command('', async (ctx) => { // Запуск навыка (пустая команда)
+  const userId = ctx.request.user_id; // Получаем userId для push
+  const initialMessage = 'Доброе утро!';
+
+  // Отвечаем сразу
+  ctx.reply(initialMessage);
+
+  // Через 3 минуты отправляем push
+  setTimeout(async () => {
+    await sendPushNotification(userId, 'Вы проснулись?');
+  }, 180000); // 3 минуты = 180000 мс
+
+  // Возвращаем ответ без закрытия сессии
+  return Reply.text(initialMessage, { endSession: false });
 });
 
-// Запуск сервера (для локального тестирования или деплоя)
+// Обработчик для любых других команд (опционально)
+alice.any(async (ctx) => {
+  return Reply.text('Я не понимаю. Скажите "запуск" для приветствия.');
+});
+
+// Запуск сервера
 const port = process.env.PORT || 3000;
 alice.listen(port, () => {
-  console.log(`Сервер запущен на порту ${port}`);
+  console.log(`Сервер запущен на порту ${port}. Используйте ngrok для HTTPS.`);
 });
