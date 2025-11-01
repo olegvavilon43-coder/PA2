@@ -2,20 +2,14 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
-let wakeupTimer;
-let checkTimer;
-
 // Store session states
 const sessions = new Map();
 
 // Clear timers for a session
 const clearTimers = (sessionId) => {
-  if (sessions.get(sessionId)?.wakeupTimer) {
-    clearTimeout(sessions.get(sessionId).wakeupTimer);
-  }
-  if (sessions.get(sessionId)?.checkTimer) {
-    clearTimeout(sessions.get(sessionId).checkTimer);
-  }
+  const session = sessions.get(sessionId);
+  if (session?.wakeupTimer) clearTimeout(session.wakeupTimer);
+  if (session?.checkTimer) clearTimeout(session.checkTimer);
 };
 
 // Helper to create response
@@ -29,6 +23,23 @@ const createResponse = (text, tts = text, buttons = [], endSession = false) => (
   version: '1.0'
 });
 
+// Placeholder for proactive message sending (replace with actual platform API)
+const sendProactiveMessage = async (sessionId, response) => {
+  // Example: Replace with your platform's API call (e.g., Yandex Alice push notification)
+  console.log(`[Proactive Message to ${sessionId}]`, response);
+  // Example API call (uncomment and adapt):
+  /*
+  await fetch('https://your-platform-api/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer YOUR_TOKEN' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      response: response.response
+    })
+  });
+  */
+};
+
 // Main webhook handler
 app.post('/', async (req, res) => {
   const { request, session, version } = req.body;
@@ -37,7 +48,7 @@ app.post('/', async (req, res) => {
 
   // Initialize session state if not exists
   if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, { state: null, timers: {} });
+    sessions.set(sessionId, { state: null, timers: {}, sessionData: session });
   }
   const sessionState = sessions.get(sessionId);
 
@@ -60,9 +71,10 @@ app.post('/', async (req, res) => {
 
   // Default handler: start morning routine
   const response = createResponse('Доброе утро!', 'Доброе утро!');
+  sessionState.state = 'morning_routine';
 
   // Set timer for "Вы встали?" after 3 minutes
-  sessionState.wakeupTimer = setTimeout(() => {
+  sessionState.wakeupTimer = setTimeout(async () => {
     sessionState.state = 'waiting_for_wakeup_response';
     const followupResponse = createResponse(
       'Вы встали?',
@@ -70,20 +82,20 @@ app.post('/', async (req, res) => {
       ['Да', 'Ещё 5 минут', 'Не буди меня']
     );
 
-    // Simulate sending followup (in real scenario, might need to store and handle via webhook)
-    console.log('Sending followup:', followupResponse);
+    // Send proactive message
+    await sendProactiveMessage(sessionId, followupResponse);
 
     // Set timer for loud wakeup if no response in 30 seconds
-    sessionState.checkTimer = setTimeout(() => {
+    sessionState.checkTimer = setTimeout(async () => {
       if (sessionState.state === 'waiting_for_wakeup_response') {
         sessionState.state = null;
-        console.log('Sending loud wakeup:', createResponse(
+        const loudResponse = createResponse(
           'А ну вставай!',
           '<speaker audio="dialogs/upload/LOUD_А_НУ_ВСТАВАЙ_ПА2.opus"> А ну вставай ПА2'
-        ));
+        );
+        await sendProactiveMessage(sessionId, loudResponse);
       }
     }, 30 * 1000);
-
   }, 3 * 60 * 1000);
 
   res.json(response);
