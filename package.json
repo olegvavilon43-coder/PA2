@@ -11,6 +11,7 @@
   "description": "",
   "dependencies": {
     "express": "^5.1.0",
+    "say": "^0.16.0",
     "yandex-dialogs-sdk": "^2.3.0"
   }
 }
