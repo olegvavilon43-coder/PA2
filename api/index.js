@@ -1,28 +1,28 @@
-const say = require('say');
+const express = require("express");
+const app = express();
 
-// Функция, которая произносит "Доброе утро"
-function sayGoodMorning() {
-    console.log('Произношу: Доброе утро!');
-    say.speak('Доброе утро', 'Microsoft Irina Desktop', 1.0, (err) => {
-        if (err) {
-            console.error('Ошибка при воспроизведении:', err);
-            return;
-        }
-        console.log('Фраза "Доброе утро" произнесена успешно!');
+app.use(express.json());
 
-        // Ждем 1 минуту (60 секунд) и произносим "Хули спишь"
-        setTimeout(() => {
-            console.log('Произношу: Хули спишь!');
-            say.speak('Хули спишь', 'Microsoft Irina Desktop', 1.0, (err) => {
-                if (err) {
-                    console.error('Ошибка при воспроизведении:', err);
-                    return;
-                }
-                console.log('Фраза "Хули спишь" произнесена успешно!');
-            });
-        }, 60 * 1000); // 60 секунд = 1 минута
-    });
-}
+// Обработка запросов от Яндекс.Алисы
+app.post("/", (req, res) => {
+  const body = req.body;
 
-// Запускаем функцию
-sayGoodMorning();
+  // Если это первое обращение — Алиса скажет "Доброе утро"
+  const response = {
+    version: body.version,
+    session: body.session,
+    response: {
+      text: "Доброе утро!",
+      tts: "Доброе утро!",
+      end_session: true
+    }
+  };
+
+  res.json(response);
+});
+
+// Запуск локального сервера
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
